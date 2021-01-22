@@ -263,6 +263,63 @@ module.exports = function(file, api, options) {
     console.warn(`Class "${name}" skipped in ${fileName} on ${line}:${column}`);
   };
 
+  /**
+   * Replaces existing occurances of a `props` variable with `props2`
+   */
+  const replacePropsVariable = (renderBody, pureClass) => {
+    const NEW_PROPS_NAME = 'props2'
+
+    j(pureClass)
+      .find(j.MethodDefinition, { key: { name: 'render' } })
+      .find(j.FunctionExpression)
+      .forEach((x) => {
+        x.scope.lookup('props').getBindings()
+          .props.forEach(y => console.log(y.scope.parent.node))
+      })
+
+    // find and replace `props` variable declarations
+    j(renderBody)
+      .find(j.VariableDeclarator, { id: { name: 'props' } })
+      // replace `const props2 = ...`
+      .forEach(p => p.value.id.name = NEW_PROPS_NAME)
+
+    // find and replace `props` variable uses
+    j(renderBody)
+      .find(j.Identifier, { name: 'props' })
+      .forEach(p => {
+        const parent = p.parentPath.value
+        switch (parent.type) {
+          // `props.something`
+          case 'MemberExpression':
+            // Do nothing with `this.props` as this is handled later...
+            if (parent.object.type === 'ThisExpression') return
+            // change `props.something` into `props2.something`
+            if (parent.object.type === 'Identifier' && parent.object.name === 'props') {
+              parent.object = j.identifier(NEW_PROPS_NAME)
+            }
+            break
+
+          // `const { ...props } =`
+          case 'RestElement':
+            parent.argument = j.identifier(NEW_PROPS_NAME)
+            break
+
+          // `const { props } = ...`
+          case 'Property':
+            // Do nothing with `cont a = { props: 'foo' }`
+            if (parent.value.type !== 'Identifier') return
+
+            parent.key = j.identifier(NEW_PROPS_NAME)
+            parent.value = j.identifier(NEW_PROPS_NAME)
+            break;
+
+          default:
+            // console.log(parent.scope)
+            // console.log(p.scope.lookup('props'))
+        }
+      })
+  }
+
   const f = j(file.source);
 
   const pureClasses = ReactUtils.findReactES6ClassDeclaration(f).filter(
@@ -287,6 +344,7 @@ module.exports = function(file, api, options) {
   // We need this to prune unused variables at the end.
   const parentClassNames = pureClasses.nodes().map(node => node.superClass.name);
 
+
   pureClasses.replaceWith(p => {
     const name = p.node.id.name;
     const renderMethod = p.value.body.body.filter(isRenderMethod)[0];
@@ -300,6 +358,8 @@ module.exports = function(file, api, options) {
     }
 
     const hasThisDotProps = j(renderBody).find(j.MemberExpression, THIS_PROPS).length > 0;
+
+    replacePropsVariable(renderBody, p);
     replaceThisProps(renderBody);
 
     if (useArrows) {
